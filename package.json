@@ -1,0 +1,18 @@
+{
+    "name": "phantom-reel-renderer",
+    "version": "1.0.0",
+    "description": "TMB Sovereign-grade 9:16 fair-use split-screen video renderer for TikTok/Shorts/Reels",
+    "main": "worker.js",
+    "type": "module",
+    "scripts": {
+          "start": "node worker.js"
+    },
+    "engines": {
+          "node": ">=20"
+    },
+    "dependencies": {
+          "@supabase/supabase-js": "^2.45.0",
+          "fluent-ffmpeg": "^2.1.3",
+          "node-fetch": "^3.3.2"
+    }
+}
