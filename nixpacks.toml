@@ -1,0 +1,9 @@
+# Nixpacks build config for Railway. Ensures FFmpeg + Node 20 are baked into the image.
+[phases.setup]
+nixPkgs = ["nodejs_20", "ffmpeg-full"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[start]
+cmd = "node worker.js"
