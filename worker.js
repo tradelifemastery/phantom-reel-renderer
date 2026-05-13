@@ -1,6 +1,7 @@
-// TMB Phantom Reel Renderer â Railway worker
+// TMB Phantom Reel Renderer v2 - Railway worker
 // Polls Supabase phantom_reel_jobs WHERE status='manifest_ready' every 30s,
 // builds 9:16 fair-use split-screen video, uploads 3 hook variants, marks completed.
+// v2: audio_url is optional - falls back to trending clip's own audio track.
 
 import { createClient } from '@supabase/supabase-js';
 import ffmpeg from 'fluent-ffmpeg';
@@ -58,15 +59,17 @@ function buildSrt(hookText, narration, duration, highlights) {
 //   - TOP half (1080x960): scaled trending clip, looped to audio length
 //   - Bottom-corner @username text overlay on top half
 //   - BOTTOM half (1080x960): dark institutional background with hook text + animated subtitles
-//   - Audio: Polly narration (the bottom-half audio drives the timeline)
+//   - Audio: Polly narration if audioPath given, otherwise trending clip's own audio track
 function renderVariant({
   trendingClipPath, audioPath, srtPath, hookText, authorHandle, outputPath, duration,
 }) {
   return new Promise((resolve, reject) => {
     const HOOK_DURATION_SEC = 3;
+    const hasNarration = !!audioPath;
     const cmd = ffmpeg()
-      .input(trendingClipPath).inputOptions(['-stream_loop -1'])
-      .input(audioPath)
+      .input(trendingClipPath).inputOptions(['-stream_loop -1']);
+    if (hasNarration) cmd.input(audioPath);
+    cmd
       .complexFilter([
         // Top half: scale + crop trending clip to 1080x960
         '[0:v]scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960[top]',
@@ -83,7 +86,8 @@ function renderVariant({
       ], 'v')
       .outputOptions([
         '-map [v]',
-        '-map 1:a',
+        // Audio: prefer narration input if given, else use trending clip's audio (input 0)
+        '-map ' + (hasNarration ? '1:a' : '0:a?'),
         '-t ' + duration,
         '-c:v libx264',
         '-pix_fmt yuv420p',
@@ -108,16 +112,18 @@ async function processJob(job) {
 
   const clip = (job.broll_clips || [])[0];
   if (!clip?.mp4_url) throw new Error('no trending clip mp4_url in job');
-  if (!job.audio_url) throw new Error('no audio_url in job');
 
   const trendingPath = join(tmp, 'trending.mp4');
-  const audioPath = join(tmp, 'audio.mp3');
-  console.log(`[job ${job.id}] downloading trending clip + audio...`);
+  let audioPath = null;
+  console.log(`[job ${job.id}] downloading trending clip${job.audio_url ? ' + narration audio' : ' (using clip audio fallback)'}...`);
   await downloadFile(clip.mp4_url, trendingPath);
-  await downloadFile(job.audio_url, audioPath);
+  if (job.audio_url) {
+    audioPath = join(tmp, 'audio.mp3');
+    await downloadFile(job.audio_url, audioPath);
+  }
 
   const duration = job.audio_duration_sec || 60;
-  const narration = job.hook_a_fear || ''; // also use as caption fallback; in production, ingest full caption text
+  const narration = job.hook_a_fear || '';
   const srtPath = join(tmp, 'subs.srt');
 
   const variants = [
@@ -130,7 +136,6 @@ async function processJob(job) {
   for (const v of variants) {
     if (!v.hook) continue;
     const outPath = join(tmp, v.slot);
-    // Generate per-variant SRT (so the hook text leads the captions)
     await writeFile(srtPath, buildSrt(v.hook, narration, duration, job.highlighted_terms || []));
     console.log(`[job ${job.id}] rendering variant ${v.key}...`);
     await renderVariant({
@@ -156,7 +161,7 @@ async function processJob(job) {
   }
 
   await unlink(trendingPath).catch(() => {});
-  await unlink(audioPath).catch(() => {});
+  if (audioPath) await unlink(audioPath).catch(() => {});
   await unlink(srtPath).catch(() => {});
 
   const { error: dbErr } = await sb.from('phantom_reel_jobs').update({
@@ -167,7 +172,7 @@ async function processJob(job) {
   }).eq('id', job.id);
   if (dbErr) throw new Error(`db update: ${dbErr.message}`);
 
-  console.log(`[job ${job.id}] â done`, outputs);
+  console.log(`[job ${job.id}] DONE`, outputs);
 }
 
 async function poll() {
@@ -191,6 +196,6 @@ async function poll() {
   }
 }
 
-console.log('ð¬ Phantom Reel Renderer worker started. Polling every', POLL_INTERVAL_MS / 1000, 's');
+console.log('[boot] Phantom Reel Renderer v2 started. Polling every', POLL_INTERVAL_MS / 1000, 's');
 setInterval(poll, POLL_INTERVAL_MS);
-poll(); // immediate first pass
+poll();
